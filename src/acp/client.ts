@@ -19,6 +19,7 @@ import { connectTransport } from './transport.js';
 import { disposeProcess, resolveCommand, serverArgs } from './process.js';
 import { aborted, classify } from './errors.js';
 import { modelOption, selectValues } from '../models.js';
+import { systemProxy } from '../proxy.js';
 
 /** One process per adapter, serialized by the adapter. No credentials or history are persisted here. */
 export class AcpClient {
@@ -89,12 +90,16 @@ export class AcpClient {
         throw aborted();
       }
       this.cwd = cwd;
+      const proxyUrl = this.config.proxyUrl || (this.config.useSystemProxy ? systemProxy() : undefined);
       this.child = this.runtime.spawn({
         argv: [command, ...serverArgs(this.config, command)],
         cwd: this.cwd,
         stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
         graceMs: this.config.disposeGraceMs,
-        env: { PYTHONUNBUFFERED: '1' },
+        env: { PYTHONUNBUFFERED: '1', ...(proxyUrl ? {
+          HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl,
+          NO_PROXY: [...new Set(['127.0.0.1', 'localhost', '::1', ...(process.env.NO_PROXY ?? '').split(',').filter(Boolean)])].join(','),
+        } : {}) },
       });
       this.processStarts++;
       const child = this.child;
@@ -116,7 +121,7 @@ export class AcpClient {
       const init = await this.bounded(
         connection.agent.request(methods.agent.initialize, {
           protocolVersion: 1,
-          clientInfo: { name: 'dsh-antigravity-acp', version: '0.3.5' },
+          clientInfo: { name: 'dsh-antigravity-acp', version: '0.3.4' },
           clientCapabilities: {
             fs: { readTextFile: false, writeTextFile: false },
             terminal: false,
@@ -196,31 +201,48 @@ export class AcpClient {
     session: NewSessionResponse,
     model: string,
     signal?: AbortSignal,
+    reasoningEffort?: string,
   ): Promise<void> {
     const option = modelOption(session);
     const wanted =
       model === 'server-default' ? this.config.defaultModel : model || this.config.defaultModel;
     if (!wanted) return;
-    if (!option || !selectValues(option).some((c) => c.value === wanted))
+    const values = option ? selectValues(option) : [];
+    const tier = wanted.match(/^(.*)-(low|medium|high)$/);
+    const thought = session.configOptions?.find((c) => c.category === 'thought_level');
+    const effort = reasoningEffort ?? tier?.[2];
+    if (thought && effort && !selectValues(thought).some(c => c.value === effort))
+      throw new LlmError('Selected thinking level is not announced by local agy.', 'UNSUPPORTED_REASONING_EFFORT');
+    const family = !values.some((c) => c.value === wanted) && tier &&
+      values.some((c) => c.value === tier[1]) && thought &&
+      selectValues(thought).some((c) => c.value === tier[2]);
+    const selected = family ? tier![1]! : wanted;
+    if (!option || !values.some((c) => c.value === selected))
       throw new LlmError(
         'Selected model is not announced in the official ACP model selector. Run doctor and use an exact server model ID.',
         'ACP_INVALID_MODEL',
       );
-    if (option.currentValue === wanted) return;
-    await this.bounded(
+    if (option.currentValue !== selected) await this.bounded(
       this.connection!.agent.request(methods.agent.session.setConfigOption, {
         sessionId: session.sessionId,
         configId: option.id,
-        value: wanted,
+        value: selected,
       }),
       this.config.requestTimeoutMs,
       signal,
+    );
+    if (thought && effort && thought.currentValue !== effort) await this.bounded(
+      this.connection!.agent.request(methods.agent.session.setConfigOption, {
+        sessionId: session.sessionId,
+        configId: thought.id,
+        value: effort,
+      }), this.config.requestTimeoutMs, signal,
     );
   }
 
   prompt(
     sessionId: string,
-    text: string,
+    text: string | import('@agentclientprotocol/sdk').ContentBlock[],
     signal?: AbortSignal,
     timeoutMs = this.config.timeoutMs,
   ): Promise<PromptResponse> {
@@ -228,7 +250,7 @@ export class AcpClient {
     return this.bounded(
       this.connection!.agent.request(methods.agent.session.prompt, {
         sessionId,
-        prompt: [{ type: 'text', text }],
+        prompt: typeof text === 'string' ? [{ type: 'text', text }] : text,
       }),
       timeoutMs,
       signal,

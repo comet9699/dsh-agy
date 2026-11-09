@@ -1,5 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import type { StreamChunk, FinishReason } from '@deepseek-ai/dsh-llm';
+import { nativeQuotaError } from './errors.js';
 export class EventMapper {
   private blocks = new Map<'text' | 'reasoning', { index: number; text: string }>();
   get blockCount(): number {
@@ -32,6 +33,8 @@ export class EventMapper {
     return chunks;
   }
   end(): StreamChunk[] {
+    const quota = nativeQuotaError(this.blocks.get('text')?.text ?? '');
+    if (quota) throw quota;
     return [...this.blocks].map(([type, b]) => ({
       type: 'block-end',
       index: b.index,

@@ -1,5 +1,11 @@
 import { LlmError } from '@deepseek-ai/dsh-llm';
 import { RequestError } from '@agentclientprotocol/sdk';
+/** Only the native standalone quota response, never prose discussing quota errors. */
+export function nativeQuotaError(text: string): LlmError | undefined {
+  const normalized = text.trim();
+  if (!/^(?:⚠\uFE0F?\s*)?Individual quota reached\. Please upgrade your subscription to increase your limits\.(?:\s+Resets in [^\r\n]+\.?)?$/i.test(normalized)) return;
+  return new LlmError(normalized, 'ACP_QUOTA_EXHAUSTED');
+}
 export function aborted(): LlmError {
   return new LlmError('Antigravity generation was interrupted.', 'ABORTED');
 }

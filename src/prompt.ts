@@ -1,10 +1,26 @@
-import { LlmError } from '@deepseek-ai/dsh-llm';
-import type { AcpGenerateOptions as GenerateOptions } from './request.js';
+import type { ForwardingOptions } from './request-options.js';
+import { LlmError, type GenerateOptions, type ImageBlock } from '@deepseek-ai/dsh-llm';
+import type { ContentBlock } from '@agentclientprotocol/sdk';
 import type { Config } from './config.js';
 import { mcpToolName } from './mcp/bridge.js';
-export function buildPrompt(options: GenerateOptions, config: Config): string {
-  // Host reasoning metadata accepts the request field; ACP's exact model ID
-  // selects the thinking tier, so reasoningEffort is intentionally not forwarded.
+export function buildPrompt(options: ForwardingOptions, config: Config, images = false): string {
+  // Model and thinking selections are applied separately through ACP session configuration.
+  validateOptions(options, config);
+  const messages = options.messages.map((m) => ({
+    role: m.role,
+    ...('toolCallId' in m ? { toolCallId: m.toolCallId, isError: m.isError ?? false } : {}),
+    content: m.content.map((b) => {
+      if (b.type === 'image' && images)
+        return { type: 'text', text: `[Image attachment ${b.attachment.attachmentId}${b.offloaded ? ' (offloaded; bytes omitted)' : ''}]` };
+      if (b.type === 'image' || b.type === 'file')
+        throw new LlmError('This route requires host-projected file references or an image attachment reader.', 'UNSUPPORTED_OPTION');
+      return b;
+    }),
+  }));
+  return promptText(options, config, messages);
+}
+/** Validate unsupported request controls before creating or resuming an ACP exchange. */
+export function validateOptions(options: ForwardingOptions, config: Config): void {
   for (const key of ['temperature', 'maxTokens'] as const) {
     if (options[key] !== undefined)
       throw new LlmError(
@@ -22,18 +38,8 @@ export function buildPrompt(options: GenerateOptions, config: Config): string {
       'toolPolicy: reject refuses tool schemas. Use the default bridge policy to execute DSH tools.',
       'UNSUPPORTED_OPTION',
     );
-  const messages = options.messages.map((m) => ({
-    role: m.role,
-    ...('toolCallId' in m ? { toolCallId: m.toolCallId, isError: m.isError ?? false } : {}),
-    content: m.content.map((b) => {
-      if (b.type === 'image' || b.type === 'file')
-        throw new LlmError(
-          'This version accepts text context only. Attachments must be projected by DSH before calling the adapter.',
-          'UNSUPPORTED_OPTION',
-        );
-      return b; // Preserve historical text, reasoning, tool calls/results and developer updates.
-    }),
-  }));
+}
+function promptText(options: ForwardingOptions, config: Config, messages: object[]): string {
   return [
     'DeepSeek Harness owns this conversation. Produce only the next assistant response using the supplied conversation.',
     ...(config.toolPolicy === 'bridge' && options.tools?.length
@@ -63,4 +69,30 @@ export function buildPrompt(options: GenerateOptions, config: Config): string {
         : {}),
     }),
   ].join('\n\n');
+}
+
+/** Reads only durable images through the host attachment service. */
+export type ImageReader = (image: ImageBlock, signal?: AbortSignal) => Promise<{ data: Uint8Array; mediaType: string }>;
+/** Encode authorized host attachment bytes for ACP input or MCP tool results. */
+export async function encodeImage(image: ImageBlock, reader?: ImageReader, signal?: AbortSignal): Promise<{ type: 'image'; data: string; mimeType: string }> {
+  if (signal?.aborted) throw new LlmError('Image request cancelled.', 'ABORTED');
+  if (!reader || image.offloaded) throw new LlmError('Image bytes are unavailable on this request.', 'UNSUPPORTED_OPTION');
+  let stored: Awaited<ReturnType<ImageReader>>;
+  try { stored = await reader(image, signal); }
+  catch (error) {
+    if (signal?.aborted) throw new LlmError('Image request cancelled.', 'ABORTED');
+    throw new LlmError('The attached image could not be read. Attach it again and retry.', 'IMAGE_ATTACHMENT_UNAVAILABLE');
+  }
+  if (signal?.aborted) throw new LlmError('Image request cancelled.', 'ABORTED');
+  return { type: 'image', data: Buffer.from(stored.data).toString('base64'), mimeType: stored.mediaType };
+}
+/** Preserve history roles in text and associate image bytes with their durable ids. */
+export async function buildAcpPrompt(options: ForwardingOptions, config: Config, reader?: ImageReader): Promise<ContentBlock[]> {
+  const content: ContentBlock[] = [{ type: 'text', text: buildPrompt(options, config, !!reader) }];
+  for (const message of options.messages) for (const block of message.content) {
+    if (block.type !== 'image' || block.offloaded) continue;
+    content.push({ type: 'text', text: `Image attachment ${block.attachment.attachmentId} from the ${message.role} message:` },
+      await encodeImage(block, reader, options.signal));
+  }
+  return content;
 }

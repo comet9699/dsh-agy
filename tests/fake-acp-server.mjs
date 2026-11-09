@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 const bridges = new Map(),
   replies = new Map();
 let prompts = 0;
@@ -12,7 +13,13 @@ let sessions = 0,
 const send = (x) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...x }) + '\n');
 const update = (sessionId, update) =>
   send({ method: 'session/update', params: { sessionId, update } });
-const configOptions = [
+const selections = {};
+const configOptions = variant === 'local-tier' ? [
+  { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gemini-4-argon',
+    options: [{ value: 'gemini-4-argon', name: 'Argon' }, { value: 'gemini-3.8-flash', name: 'Flash' }] },
+  { id: 'thought_level', name: 'Thinking Level', category: 'thought_level', type: 'select', currentValue: 'medium',
+    options: ['low', 'medium', 'high'].map(value => ({ value, name: value })) },
+] : [
   {
     id: 'model',
     name: 'Model',
@@ -51,7 +58,7 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       protocolVersion: variant === 'v2' ? 2 : 1,
       agentCapabilities: {
         auth: { logout: {} },
-        ...(variant.startsWith('bridge') ? { mcpCapabilities: { http: true } } : {}),
+        ...(variant.startsWith('bridge') && variant !== 'bridge-stdio' ? { mcpCapabilities: { http: true } } : {}),
       },
       authMethods: [{ id: 'oauth-personal', name: 'Google' }],
       agentInfo: { name: 'fake-acp', version: 'test' },
@@ -69,7 +76,7 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
     bridges.set(sid, p.mcpServers);
     return ok({ sessionId: sid, configOptions });
   }
-  if (method === 'session/set_config_option') return ok({ configOptions });
+  if (method === 'session/set_config_option') { selections[p.configId] = p.value; return ok({ configOptions }); }
   if (method === 'session/cancel') {
     cancelled.add(p.sessionId);
     if (variant !== 'ignore-cancel') {
@@ -93,6 +100,15 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       return;
     }
     const sid = p.sessionId;
+    if (variant === 'quota') {
+      for (const text of ['⚠ Individual quota reached. ', 'Please upgrade your subscription to increase your limits.', '\nResets in 3h29m56s.']) update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+      return ok({ stopReason: 'end_turn' });
+    }
+    if (variant === 'capacity') update(sid, { sessionUpdate: 'usage_update', used: 1234, size: 1048576 });
+    if (variant === 'local-tier') {
+      update(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(selections) } });
+      return ok({ stopReason: 'end_turn' });
+    }
     if (variant === 'bridge-native') {
       update(sid, {
         sessionUpdate: 'tool_call',
@@ -107,7 +123,8 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       const descriptor = bridges.get(sid)[0];
       const mcp = new Client({ name: 'fake-acp', version: '1' });
       await mcp.connect(
-        new StreamableHTTPClientTransport(new URL(descriptor.url), {
+        descriptor.command ? new StdioClientTransport({ command: descriptor.command, args: descriptor.args,
+          env: { ...process.env, ...Object.fromEntries(descriptor.env.map(e => [e.name, e.value])) } }) : new StreamableHTTPClientTransport(new URL(descriptor.url), {
           requestInit: {
             headers: Object.fromEntries(descriptor.headers.map((h) => [h.name, h.value])),
           },

@@ -25,12 +25,10 @@ export class DshMcpBridge {
   constructor(
     tools: readonly ToolSchema[],
     private onCall: (call: ToolCallBlock) => Promise<CallToolResult>,
+    private acpToolMetadata: 'structured' | 'agy-title' = 'structured',
   ) {
-    if (tools.length > 256)
-      throw new LlmError(
-        'The MCP bridge supports at most 256 active tools.',
-        'ACP_TOOL_CATALOG_INVALID',
-      );
+    // Harness owns tool admission. Preserve its complete catalog; plugin tools
+    // must not make an otherwise valid conversation fail an adapter count cap.
     const names = new Set<string>();
     const ajv = new Ajv({ strict: false, validateFormats: false, logger: false });
     const ajv2020 = new Ajv2020({ strict: false, validateFormats: false, logger: false });
@@ -63,7 +61,12 @@ export class DshMcpBridge {
   }
   owns(call: { _meta?: Record<string, unknown> | null; title?: string | null }): boolean {
     const meta = call._meta?.mcp;
-    if (!meta || typeof meta !== 'object') return false;
+    if (!meta) {
+      // Local agy 1.5 emits exact server-generated titles instead of MCP metadata.
+      // This recognizes advisory updates only; dispatch still requires an authenticated MCP request.
+      return this.acpToolMetadata === 'agy-title' && this.tools.some(t => call.title === `Run mcp_dsh-bridge_${t.mcpName}`);
+    }
+    if (typeof meta !== 'object') return false;
     const { server, tool } = meta as Record<string, unknown>;
     return server === 'dsh-bridge' && this.tools.some((t) => t.mcpName === tool);
   }
@@ -129,7 +132,7 @@ export class DshMcpBridge {
     }
     const body: unknown = JSON.parse(Buffer.concat(parts).toString('utf8'));
     const protocol = new Server(
-      { name: 'dsh-bridge', version: '0.3.5' },
+      { name: 'dsh-bridge', version: '0.3.4' },
       { capabilities: { tools: {} } },
     );
     this.protocols.add(protocol);

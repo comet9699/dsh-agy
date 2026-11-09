@@ -1,0 +1,13 @@
+# Verified scope and limitations
+
+- Qualified environment: Windows x64, official Harness 0.2.2-rc.1 and local agy 1.5.0. Linux, macOS and later Harness versions are unqualified.
+- Real tests covered basic chat, corrections, independent sessions, restart/resume, model/thinking-level selection, code generation with separate Python execution, manual compaction and recall, read-only web fetching, and a REA status query. This is not a claim that all plugins or all REA operations were verified.
+- Some Argon generations timed out. Native records show an outstanding Google generation request was canceled when the configured local generation budget expired. Later direct/native and Harness comparisons succeeded. Proxy/network versus upstream-service latency remains unresolved; a longer budget is not a proven fix.
+- The generic provider's default generation budget is 600000 ms. A user's profile may override `timeoutMs`; the earlier local timeout reproductions used a 120000 ms profile setting. Installation does not rewrite the user's custom budget.
+- ACP does not expose `maxTokens`, `temperature` or stop-sequence controls. Requests specifying unsupported options fail explicitly. For example, some third-party AI commit-message and pet-chat routes use such options and are not compatible with this provider as-is.
+- Agy may attempt a native tool instead of a Harness MCP tool. That request is rejected; it is not silently rerouted. Tool discovery/search invocation is not reliable across every model and prompt. This is not OS-level sandboxing of the native executable.
+- Catalog refresh happens when Harness queries the provider catalog; it is not a guaranteed live UI push update.
+- Quota is fetched on demand, cached, and may be stale or unavailable during work. It is not a billing guarantee.
+- Automatic idle compaction uses a local historical-token maintenance budget. Unknown model context capacity remains unknown; it is not reported as an invented 1M window. Failed or canceled summaries are rejected and prior context is retained.
+- Each independent turn may recycle the ACP child to avoid retained MCP aliases. Startup overhead is expected. Streaming tool exchanges retain their child until the exchange settles.
+- No overnight stability, scrolling performance or arbitrary third-party plugin compatibility claim is made for this public beta.

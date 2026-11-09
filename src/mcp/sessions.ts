@@ -1,6 +1,9 @@
+import type { ForwardingOptions } from '../request-options.js';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import {
   LlmError,
+  type GenerateOptions,
   type StreamChunk,
   type ToolCallBlock,
   type RequestMessage,
@@ -10,10 +13,9 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { AcpClient } from '../acp/client.js';
 import { EventMapper, finishReason } from '../acp/events.js';
 import { aborted, classify } from '../acp/errors.js';
-import { buildPrompt } from '../prompt.js';
+import { buildAcpPrompt, encodeImage, validateOptions, type ImageReader } from '../prompt.js';
 import type { Config } from '../config.js';
 import { DshMcpBridge } from './bridge.js';
-import type { AcpGenerateOptions as GenerateOptions } from '../request.js';
 
 interface Pending {
   call: ToolCallBlock;
@@ -54,10 +56,11 @@ function history(messages: readonly RequestMessage[]): string[] {
     }),
   );
 }
-function signature(o: GenerateOptions): string {
+function signature(o: ForwardingOptions): string {
   return JSON.stringify({
     provider: o.provider,
     model: o.model,
+    reasoningEffort: o.reasoningEffort,
     system: o.system ?? null,
     tools: o.tools ?? [],
   });
@@ -86,6 +89,8 @@ export class ToolSessions {
     private config: Config,
     private runtime: SubprocessRuntime,
     private notify: (message: string) => void,
+    private readImage?: ImageReader,
+    private observeCapacity?: (model: string, update: import('@agentclientprotocol/sdk').SessionUpdate) => void,
   ) {}
   get active(): number {
     return this.bindings.size;
@@ -162,7 +167,7 @@ export class ToolSessions {
       this.account(client);
     }
   }
-  private find(o: GenerateOptions): Binding | undefined {
+  private find(o: ForwardingOptions): Binding | undefined {
     if (o.purpose) return undefined;
     if (o.sessionId) return this.bindings.get(o.sessionId);
     const ids = new Set(o.messages.flatMap((m) => (m.role === 'tool' ? [m.toolCallId] : [])));
@@ -170,7 +175,7 @@ export class ToolSessions {
       [...b.pending.values()].some((p) => p.exposed && ids.has(p.call.id)),
     );
   }
-  has(o: GenerateOptions): boolean {
+  has(o: ForwardingOptions): boolean {
     return !!this.find(o);
   }
   private deadline(b: Binding, ms: number, code: string): void {
@@ -225,7 +230,7 @@ export class ToolSessions {
       }, 10);
     return result;
   }
-  private async create(o: GenerateOptions): Promise<Binding> {
+  private async create(o: ForwardingOptions): Promise<Binding> {
     if (this.bindings.size >= this.config.maxActiveToolSessions)
       throw new LlmError(
         'Too many active ACP tool sessions. Finish or cancel an existing turn.',
@@ -250,23 +255,33 @@ export class ToolSessions {
       stop: '',
       listeners: [],
     };
-    b.bridge = new DshMcpBridge(o.tools ?? [], (call) => this.queueTool(b, call));
+    b.bridge = new DshMcpBridge(o.tools ?? [], (call) => this.queueTool(b, call), this.config.acpToolMetadata);
     this.bindings.set(key, b);
     this.watch(b, o.signal);
     try {
       await client.start(b.controller.signal);
-      if (!client.initializeResult?.agentCapabilities?.mcpCapabilities?.http)
+      if (this.config.mcpTransport === 'http' && !client.initializeResult?.agentCapabilities?.mcpCapabilities?.http)
         throw new LlmError(
           'Official ACP server does not advertise HTTP MCP support.',
           'ACP_MCP_UNSUPPORTED',
         );
-      const descriptor = await b.bridge.start();
+      const http = await b.bridge.start();
+      const descriptor = this.config.mcpTransport === 'stdio' ? {
+        name: http.name,
+        command: process.execPath,
+        args: [this.config.stdioForwarder || fileURLToPath(new URL('./stdio-forwarder.js', import.meta.url))],
+        env: [
+          { name: 'DSH_ACP_BRIDGE_URL', value: http.url },
+          { name: 'DSH_ACP_BRIDGE_AUTH', value: http.headers[0]!.value },
+        ],
+      } : http;
       const session = await client.newSession(b.controller.signal, true, [descriptor]);
       b.sessionId = session.sessionId;
-      await client.selectModel(session, o.model, b.controller.signal);
+      await client.selectModel(session, o.model, b.controller.signal, o.reasoningEffort);
       client.onUpdate = (event) => {
         if (event.sessionId !== b.sessionId || b.done) return;
         const u = event.update;
+        this.observeCapacity?.(o.model, u);
         if (u.sessionUpdate === 'tool_call' || u.sessionUpdate === 'tool_call_update') {
           if (b.bridge.owns(u)) b.trustedAcpIds.add(u.toolCallId);
           else if (!b.trustedAcpIds.has(u.toolCallId))
@@ -305,7 +320,7 @@ export class ToolSessions {
       throw error;
     }
   }
-  private matches(b: Binding, o: GenerateOptions): boolean {
+  private matches(b: Binding, o: ForwardingOptions): boolean {
     const current = history(o.messages);
     return (
       signature(o) === b.signature &&
@@ -314,10 +329,11 @@ export class ToolSessions {
       !o.messages.slice(b.history.length).some((m) => m.role === 'user')
     );
   }
-  private resume(b: Binding, o: GenerateOptions): void {
+  private async resume(b: Binding, o: ForwardingOptions): Promise<void> {
     const tail = o.messages.slice(b.history.length);
     const exposed = [...b.pending.values()].filter((p) => p.exposed);
-    const results = exposed.map((p) => {
+    const imageSignal = o.signal ? AbortSignal.any([o.signal, b.controller.signal]) : b.controller.signal;
+    const results = await Promise.all(exposed.map(async (p) => {
       const matching = tail.filter((m) => m.role === 'tool' && m.toolCallId === p.call.id);
       const hasCall = tail.some(
         (m) =>
@@ -341,13 +357,13 @@ export class ToolSessions {
         pending: p,
         result: {
           isError: message.isError ?? false,
-          content: message.content.map((c) => ({
-            type: 'text' as const,
-            text: c.type === 'text' || c.type === 'reasoning' ? c.text : JSON.stringify(c),
-          })),
+          content: await Promise.all(message.content.map(async c => c.type === 'image' && !c.offloaded
+            ? encodeImage(c, this.readImage, imageSignal)
+            : { type: 'text' as const, text: c.type === 'text' || c.type === 'reasoning' ? c.text : JSON.stringify(c) })),
         },
       };
-    });
+    }));
+    if (imageSignal.aborted) throw b.error ?? aborted();
     if (!exposed.length)
       throw new LlmError('The ACP session has no exposed calls to resume.', 'ACP_SESSION_BUSY');
     b.history = history(o.messages);
@@ -357,7 +373,7 @@ export class ToolSessions {
     }
     if (!b.pending.size) this.deadline(b, this.config.timeoutMs, 'ACP_TIMEOUT');
   }
-  async *stream(o: GenerateOptions): AsyncIterable<StreamChunk> {
+  async *stream(o: ForwardingOptions): AsyncIterable<StreamChunk> {
     if (this.disposed) throw new LlmError('ACP adapter disposed.', 'ACP_DISPOSED');
     if (o.signal?.aborted) throw aborted();
     let b = this.find(o),
@@ -366,17 +382,16 @@ export class ToolSessions {
       completed = false;
     if (b && (!b.sessionId || b.writer))
       throw new LlmError('This DSH session already has an active generation.', 'ACP_SESSION_BUSY');
-    let prompt: string;
+    if (b && !this.matches(b, o)) {
+      await this.close(b); b = undefined; fresh = true;
+    }
+    let prompt: import('@agentclientprotocol/sdk').ContentBlock[] = [];
     try {
-      prompt = buildPrompt(o, this.config);
+      validateOptions(o, this.config);
+      if (fresh) prompt = await buildAcpPrompt(o, this.config, this.readImage);
     } catch (error) {
       if (b) await this.close(b);
       throw error;
-    }
-    if (b && !this.matches(b, o)) {
-      await this.close(b);
-      b = undefined;
-      fresh = true;
     }
     b ??= await this.create(o);
     const w: Writer = {
@@ -400,7 +415,7 @@ export class ToolSessions {
         );
       } else {
         this.watch(b, o.signal);
-        this.resume(b, o);
+        await this.resume(b, o);
       }
       while (true) {
         while (w.queue.length) {
@@ -442,7 +457,7 @@ export class ToolSessions {
       completed = b.stop === 'end_turn';
       yield { type: 'finish', reason: finishReason(b.stop) };
     } catch (error) {
-      throw o.signal?.aborted ? aborted() : classify(error);
+      throw o.signal?.aborted ? aborted() : classify(b.error ?? error);
     } finally {
       clearTimeout(w.batch);
       if (b.writer === w) b.writer = undefined;

@@ -19,7 +19,7 @@ const parsed = parseArgs({
 const action = parsed.positionals[0] ?? 'doctor';
 if (parsed.values.help) {
   console.log(
-    'dsh-antigravity-acp <login|status|doctor|logout|probe> [--command /path/to/agy_acp_server] [--arg value] [--model exact-id]',
+    'dsh-agy <login|status|doctor|logout|probe> [--command /path/to/agy_acp_server] [--arg value] [--model exact-id]',
   );
 } else {
   if (!['login', 'status', 'doctor', 'logout', 'probe'].includes(action))
@@ -33,6 +33,7 @@ if (parsed.values.help) {
   const adapter = new AntigravityAcpAdapter(
     resolveConfig({
       command: parsed.values.command ?? '',
+      autoInstall: false,
       args: parsed.values.arg ?? [],
       defaultModel: parsed.values.model ?? '',
     }),

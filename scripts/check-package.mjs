@@ -1,34 +1,28 @@
-import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-const root = fileURLToPath(new URL('../', import.meta.url));
-async function walk(dir) {
-  const out = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    out.push(...(entry.isDirectory() ? await walk(path) : [path]));
-  }
-  return out;
-}
-for (const path of [...(await walk(join(root, 'src'))), ...(await walk(join(root, 'dist')))]) {
-  const source = await readFile(path, 'utf8');
-  assert(
-    !/v1internal|cloudcode|refresh_token|client_secret/i.test(source),
-    `Forbidden private transport/auth reference in ${path}`,
-  );
-  assert(
-    !/rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED/.test(source),
-    `TLS override in ${path}`,
-  );
-  assert(!/\.(exe|par|zip)$/.test(path), `Proprietary binary in package: ${path}`);
-}
-const plugin = await import('../dist/index.js');
-assert.equal(plugin.name, 'llm-antigravity-acp');
-assert.deepEqual(plugin.inject, ['llm', 'subprocess']);
-assert.equal(typeof plugin.apply, 'function');
-assert.equal(plugin.default, undefined);
-const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+const root = new URL('../', import.meta.url);
+const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
+assert.equal(pkg.name, 'dsh-agy');
+assert.equal(pkg.engines.dsh, '0.2.2-rc.1');
 assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml');
-assert.equal(pkg.main, 'dist/index.js');
-console.log('Published entry, source security scan and package metadata passed.');
+assert.equal(pkg.repository.url, 'git+https://github.com/comet9699/dsh-agy.git');
+const patch = await readFile(new URL('cordis.patch.yml', root), 'utf8');
+assert(!patch.includes('name: dsh-agy-local-acp'));
+assert(patch.includes('name: dsh-agy/compaction'));
+for (const file of ['index', 'cli', 'compaction', 'search', 'quota', 'client', 'mcp/stdio-forwarder']) assert((await stat(new URL(`dist/${file}.js`, root))).size > 0);
+assert((await readFile(new URL('dist/client.js', root), 'utf8')).includes('id:"dsh-agy"'));
+for (const dir of ['src/', 'dist/']) {
+ async function inspect(url) {
+  for (const entry of await readdir(url, { withFileTypes: true })) {
+   const child = new URL(entry.name + (entry.isDirectory() ? '/' : ''), url);
+   if (entry.isDirectory()) await inspect(child);
+   else if (/\.(?:js|ts|jsx|mjs|json)$/.test(entry.name)) {
+    const text = await readFile(child, 'utf8');
+    assert(!/[A-Z]:[/\\](?:Users[/\\][^/\\\s'\"]+|Agy-Studio(?:-Next)?[/\\])/i.test(text), `Machine-specific data: ${child}`);
+    assert(!/gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|-----BEGIN (?:RSA |OPENSSH )?PRIVATE KEY-----/.test(text), `Credential pattern: ${child}`);
+   }
+  }
+ }
+ await inspect(new URL(dir, root));
+}
+console.log('dsh-agy manifest, compiled entries, module ID and private-path checks passed.');

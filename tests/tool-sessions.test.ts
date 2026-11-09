@@ -1,3 +1,4 @@
+import type { ForwardingOptions } from '../src/request-options.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Context } from '@deepseek-ai/cordis';
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
@@ -5,6 +6,7 @@ import {
   createAssistantMessage,
   createToolResultMessage,
   ReasoningEffortId,
+  type GenerateOptions,
   type StreamChunk,
   type ToolCallBlock,
 } from '@deepseek-ai/dsh-llm';
@@ -12,7 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { AntigravityAcpAdapter } from '../src/adapter.js';
 import { resolveConfig } from '../src/config.js';
 import { AcpClient } from '../src/acp/client.js';
-import type { AcpGenerateOptions as GenerateOptions } from '../src/request.js';
+import { AttachmentId } from '@deepseek-ai/dsh-attachment';
+import type { ImageReader } from '../src/prompt.js';
 const live: AntigravityAcpAdapter[] = [],
   contexts: Context[] = [];
 const SessionId = (id: string) => id as GenerateOptions['sessionId'];
@@ -20,7 +23,7 @@ afterEach(async () => {
   await Promise.all(live.splice(0).map((a) => a.dispose()));
   await Promise.all(contexts.splice(0).map((c) => c.fiber.dispose()));
 });
-function fixture(variant = 'bridge', extra = {}) {
+function fixture(variant = 'bridge', extra = {}, readImage?: ImageReader) {
   const ctx = new Context();
   contexts.push(ctx);
   const runtime = new LocalSubprocessRuntime(ctx);
@@ -34,9 +37,11 @@ function fixture(variant = 'bridge', extra = {}) {
       ...extra,
     }),
     runtime,
+    undefined,
+    readImage,
   );
   live.push(adapter);
-  const options: GenerateOptions = {
+  const options: ForwardingOptions = {
     provider: 'antigravity-acp',
     model: 'fake-model',
     sessionId: SessionId('test'),
@@ -56,7 +61,7 @@ function fixture(variant = 'bridge', extra = {}) {
   };
   return { adapter, options, runtime };
 }
-async function collect(a: AntigravityAcpAdapter, o: GenerateOptions) {
+async function collect(a: AntigravityAcpAdapter, o: ForwardingOptions) {
   const cs: StreamChunk[] = [];
   for await (const c of a.stream(o)) cs.push(c);
   return cs;
@@ -66,7 +71,7 @@ function calls(cs: StreamChunk[]): ToolCallBlock[] {
     c.type === 'block-end' && c.block.type === 'tool-call' ? [c.block] : [],
   );
 }
-function answer(o: GenerateOptions, cs: StreamChunk[], isError = false): GenerateOptions {
+function answer(o: ForwardingOptions, cs: StreamChunk[], isError = false): ForwardingOptions {
   const blocks = cs.flatMap((c) => (c.type === 'block-end' ? [c.block] : []));
   return {
     ...o,
@@ -89,6 +94,31 @@ function answer(o: GenerateOptions, cs: StreamChunk[], isError = false): Generat
   };
 }
 describe('DSH tool round trips over ACP + MCP', () => {
+  it('returns image bytes from tools and reads them once across sequential calls', async () => {
+    const reader = vi.fn<ImageReader>(async () => ({ data: new Uint8Array([1, 2, 3]), mediaType: 'image/png' }));
+    const { adapter, options } = fixture('bridge-sequential', {}, reader);
+    const first = await collect(adapter, options);
+    const withImage = answer(options, first);
+    withImage.messages = [...withImage.messages.slice(0, -1), createToolResultMessage({ callId: calls(first)[0]!.id, isError: false, content: [{ type: 'image', attachment: {
+      attachmentId: AttachmentId(`sha256:${'a'.repeat(64)}`), mediaType: 'image/png', bytes: 3, width: 1, height: 1,
+    } }] })];
+    const second = await collect(adapter, withImage);
+    expect(calls(second)).toHaveLength(1);
+    const done = await collect(adapter, answer(withImage, second));
+    const response = done.filter(c => c.type === 'text-delta').map(c => c.text).join('');
+    expect(response).toContain('"type":"image"');
+    expect(response).toContain('"data":"AQID"');
+    expect(response).toContain('CONTENT_second');
+    expect(reader).toHaveBeenCalledTimes(1);
+  });
+  it('round trips real MCP stdio tools when the server has no HTTP capability', async () => {
+    const { adapter, options } = fixture('bridge-stdio', { mcpTransport: 'stdio',
+      stdioForwarder: fileURLToPath(new URL('../dist/mcp/stdio-forwarder.js', import.meta.url)) });
+    const first = await collect(adapter, options);
+    expect(calls(first)).toHaveLength(1);
+    const next = await collect(adapter, answer(options, first));
+    expect(next.filter(c => c.type === 'text-delta').map(c => c.text).join('')).toContain('CONTENT_x');
+  });
   it.each(['off', 'medium'])(
     'preserves a tool round trip with host reasoning effort %s',
     async (effort) => {

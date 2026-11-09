@@ -1,36 +1,17 @@
 # Third-party notices
 
-This plugin is independently implemented. It imports the official ACP SDK
-and DeepSeek Harness packages; their licenses remain with their distributions.
-No Google executable, credential file, or third-party implementation is copied
-into this repository or package.
+## Upstream implementation
 
-ZIP extraction uses [yauzl](https://github.com/thejoshwolfe/yauzl) (MIT), imported
-as a package dependency. Official Google archives are downloaded directly to a
-local cache at runtime; they are not redistributed by this repository.
+This repository is a derived work of **dannndouglas/dsh-antigravity-acp**, v0.3.4, commit `987fd7f60214e24d6b866776b50425387fc171b3`, licensed under MIT:
 
-Architectural references:
+https://github.com/dannndouglas/dsh-antigravity-acp
 
-- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), MIT:
-  LlmAdapter registration, StreamChunk conventions, SDK-based ACP client,
-  and managed subprocess lifecycle.
-- [dsh-llm-antigravity](https://github.com/zhangzhangco/dsh-llm-antigravity), MIT:
-  bundle patch packaging and the explicit text-provider limitation.
-- [pi-antigravity-bridge](https://github.com/EstebanForge/pi-extensions/tree/main/packages/pi-antigravity-bridge), MIT:
-  ACP connection and parked MCP-to-harness tool round trips. Source inspected
-  from npm release 1.7.8 and its current monorepo. No source copied.
-- [pi-antigravity-acp-provider](https://github.com/zacbemis/pi-antigravity-acp-provider), MIT:
-  npm release 0.1.12 and repository inspected for MCP forwarding, continuation
-  identity and native-agent ownership boundaries. No source copied.
-- [paseo-agy-acp](https://github.com/tiezbro/paseo-agy-acp), Apache-2.0:
-  official kernel lifecycle, permission modes and Linux Registry launch flags.
-  No source copied and no compatibility injection adopted.
-- [Agent Client Protocol](https://github.com/agentclientprotocol/agent-client-protocol)
-  and its [Registry](https://github.com/agentclientprotocol/registry):
-  protocol specification, schema and official download metadata.
-- [antigravity-acp-harness](https://github.com/rhgo1749/antigravity-acp-harness):
-  indexed README inspected; implementation was unavailable (HTTP 404).
-  No source copied or claims made about uninspected Hermes tool semantics.
+The original MIT license and copyright notice remain in `LICENSE`. The upstream ACP provider, installer, transport and MCP bridging implementation are retained and adapted; this fork does **not** claim that those components were independently written here. Local adaptations include the 0.2.2-rc.1 target, quota UI, model/thinking-level handling, compaction guards, proxy integration and tool-catalog behavior described in the README.
 
-Google Antigravity and its official ACP server are Google products and are
-governed by Google's licenses and terms. This is an independent community plugin.
+## Bundled JavaScript
+
+The prebuilt runtime bundles `@agentclientprotocol/sdk` (1.4.0), `@modelcontextprotocol/sdk` (1.32.2), `ajv` (8.20.0), `yauzl` (3.4.0), `undici` (7.29.1), `fast-xml-parser` (5.11.1), and their imported transitive JavaScript dependencies. The exact build dependency inventory is in `dist/third-party.json`. Their notices are retained in `dist/licenses/` and adjacent `*.LEGAL.txt` files. Official `@deepseek-ai/*` services remain external and are provided by the compatible host; they are not republished as a replacement Harness installation.
+
+React is supplied by the host's browser module loader and is not bundled into the browser entry. The package contains no Google binary, user credentials, login directory, chat history or model API key.
+
+Google Antigravity/agy and its server are governed by their own licenses and terms. Google, Gemini and DeepSeek names identify integrations; this is an independent community fork and does not imply endorsement.

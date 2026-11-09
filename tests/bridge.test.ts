@@ -42,6 +42,33 @@ async function fixture(
   return { bridge, client, descriptor };
 }
 describe('local MCP bridge', () => {
+  it('lists all 300 admitted tools and dispatches the last one without truncation', async () => {
+    const catalog = Array.from({ length: 300 }, (_, i) => ({ name: `plugin.tool_${i}`, description: `Tool ${i}`, parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false } }));
+    const dispatched: string[] = [];
+    const bridge = new DshMcpBridge(catalog, async call => { dispatched.push(call.name); return { content: [{ type: 'text', text: call.name + call.arguments }] }; });
+    live.push(bridge);
+    const descriptor = await bridge.start();
+    const client = new Client({ name: 'large-catalog-test', version: '1' }); clients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(new URL(descriptor.url), { requestInit: { headers: Object.fromEntries(descriptor.headers.map(h => [h.name, h.value])) } }));
+    const result = await client.listTools();
+    expect(result.tools).toHaveLength(300);
+    const last = result.tools[299]!;
+    expect((await client.callTool({ name: last.name, arguments: { value: 'LAST_TOOL_OK' } })).content).toEqual([{ type: 'text', text: 'plugin.tool_299{"value":"LAST_TOOL_OK"}' }]);
+    expect((await client.callTool({ name: last.name, arguments: { value: 1 } })).isError).toBe(true);
+    expect(dispatched).toEqual(['plugin.tool_299']);
+  });
+  it('recognizes only exact local agy MCP titles without dispatching from advisory events', async () => {
+    let dispatched = 0;
+    const b = new DshMcpBridge([{ name: 'read', description: 'Read', parameters: { type: 'object' } }],
+      async () => { dispatched++; return { content: [] }; }, 'agy-title');
+    live.push(b);
+    const title = `Run mcp_dsh-bridge_${b.tools[0]!.mcpName}`;
+    expect(b.owns({ title })).toBe(true);
+    expect(b.owns({ title: title + ' extra' })).toBe(false);
+    expect(b.owns({ title: 'Run native command' })).toBe(false);
+    expect(b.owns({ title, _meta: { mcp: { server: 'evil', tool: b.tools[0]!.mcpName } } })).toBe(false);
+    expect(dispatched).toBe(0);
+  });
   it('preserves the DSH tool name and exact arguments across an official MCP transport', async () => {
     const { client } = await fixture();
     const { tools } = await client.listTools();

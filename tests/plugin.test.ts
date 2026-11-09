@@ -11,6 +11,17 @@ import { join } from 'node:path';
 import { distribution } from '../src/acp/installer.js';
 import { zipFixture } from './zip-fixture.js';
 import { AcpClient } from '../src/acp/client.js';
+it('reports the native quota response as an error instead of a successful model turn', async () => {
+  const ctx = new Context();
+  try {
+    await ctx.plugin(LlmRuntime); await ctx.plugin(LocalSubprocessRuntime);
+    await ctx.plugin(plugin, resolveConfig({ command: process.execPath, args: [fileURLToPath(new URL('./fake-acp-server.mjs', import.meta.url)), 'quota'] }));
+    const chunks = [];
+    for await (const chunk of ctx.llm.stream({ provider: 'antigravity-acp', model: 'fake-model', messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] })) chunks.push(chunk);
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'ACP_QUOTA_EXHAUSTED' } } });
+    expect(chunks.some(c => c.type === 'finish' && c.reason.kind === 'stop')).toBe(false);
+  } finally { await ctx.fiber.dispose(); }
+});
 it.each(['off', 'low', 'medium', 'high', 'max'])(
   'accepts host reasoning effort %s while keeping the exact ACP model ID',
   async (effort) => {
@@ -63,7 +74,7 @@ it('mounts through Cordis, discovers the primary model route, streams through ct
     );
     expect(ctx.llm.listProviders()).toContainEqual({
       id: 'antigravity-acp',
-      name: 'Antigravity (official ACP)',
+      name: 'Agy',
     });
     expect(await ctx.llm.listModels('antigravity-acp')).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: 'fake-model' })]),

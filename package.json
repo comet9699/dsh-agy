@@ -1,24 +1,25 @@
 {
-  "name": "dsh-antigravity-acp",
-  "version": "0.3.5",
-  "description": "Official Google Antigravity ACP provider with DSH-owned tools over MCP",
+  "name": "dsh-agy",
+  "version": "0.1.0-beta.1",
+  "description": "Community local agy ACP provider for DeepSeek Harness 0.2.2-rc.1",
   "type": "module",
   "license": "MIT",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+    ".": "./dist/index.js",
+    "./compaction": "./dist/compaction.js",
+    "./search": "./dist/search.js",
+    "./quota": "./dist/quota.js",
+    "./client": "./dist/client.js"
   },
   "bin": {
-    "dsh-antigravity-acp": "dist/cli.js"
+    "dsh-agy": "dist/cli.js"
   },
   "files": [
     "dist",
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "docs"
@@ -26,11 +27,19 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ],
+      "platform": "web"
     }
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dannndouglas/dsh-antigravity-acp.git"
+    "url": "git+https://github.com/comet9699/dsh-agy.git"
   },
   "keywords": [
     "dsh-plugin",
@@ -39,46 +48,86 @@
     "acp"
   ],
   "engines": {
-    "node": ">=22.19"
-  },
-  "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc -p tsconfig.test.json",
-    "format:check": "prettier --check src tests scripts",
-    "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build && node scripts/check-package.mjs",
-    "auth": "npm run build && node dist/cli.js login",
-    "probe": "npm run build && node dist/cli.js probe",
-    "prepack": "npm run build"
-  },
-  "dependencies": {
-    "@agentclientprotocol/sdk": "1.4.0",
-    "@deepseek-ai/schemastery": "3.18.4",
-    "@modelcontextprotocol/sdk": "1.32.2",
-    "ajv": "8.20.0",
-    "yauzl": "3.4.0"
+    "node": ">=22.19",
+    "dsh": "0.2.2-rc.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4 || 4.0.5-alpha.1 || ~4.1.0",
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1",
-    "@deepseek-ai/dsh-subprocess-local": "0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.5 || 0.2.2-rc.1"
-  },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-subprocess-local": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@deepseek-ai/cordis": "4.1.0",
-    "@deepseek-ai/dsh-app-boot": "0.2.2-rc.1",
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-compaction": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-compaction-basic": "0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
     "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1",
     "@deepseek-ai/dsh-subprocess-local": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-token-meter": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-web": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subprocess": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subprocess-local": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction-basic": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-token-meter": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-web": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "homepage": "https://github.com/comet9699/dsh-agy#readme",
+  "bugs": {
+    "url": "https://github.com/comet9699/dsh-agy/issues"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "check:package": "node scripts/check-package.mjs",
+    "check": "npm test && npm run build && npm run check:package"
+  },
+  "devDependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-app-boot": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-attachment": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-compaction": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-compaction-basic": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess-local": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-token-meter": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-web": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@types/node": "^22.15.0",
     "@types/yauzl": "3.4.0",
-    "prettier": "3.6.2",
+    "ajv": "8.20.0",
+    "esbuild": "0.28.2",
+    "fast-xml-parser": "^5.11.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "undici": "^7.29.1",
+    "vitest": "^4.1.11",
+    "yauzl": "3.4.0"
   }
 }

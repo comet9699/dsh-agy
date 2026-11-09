@@ -1,7 +1,9 @@
+import type { ForwardingOptions } from './request-options.js';
 import {
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
+  type GenerateOptions,
   type StreamChunk,
   type LlmModelInfo,
   type LlmResolvedModelInfo,
@@ -10,21 +12,19 @@ import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess';
 import { AcpClient } from './acp/client.js';
 import { EventMapper, finishReason } from './acp/events.js';
 import { aborted, classify } from './acp/errors.js';
-import { modelCatalog } from './models.js';
-import { buildPrompt } from './prompt.js';
+import { modelCatalog, selectValues } from './models.js';
+import { buildAcpPrompt, type ImageReader } from './prompt.js';
 import type { Config } from './config.js';
 import { ToolSessions } from './mcp/sessions.js';
-import type { AcpGenerateOptions as GenerateOptions } from './request.js';
 
 /**
  * DSH 0.2.1-rc.3 requires every model entry to declare reasoning metadata
  * before a request carrying a `reasoningEffort` is accepted; without it the
  * host throws UNSUPPORTED_REASONING_EFFORT for any effort, including `off`.
  *
- * Antigravity encodes the thinking level into the model ID suffix
- * (`-low` / `-medium` / `-high`) and this adapter never consumes
- * `options.reasoningEffort`, so a full host-neutral effort list is declared
- * purely to satisfy the host contract. See
+ * Older servers encode thinking in model ID suffixes. This fallback is replaced
+ * by the server's thought_level choices after discovery; local agy receives the
+ * separate requested effort through session configuration. See
  * https://github.com/dannndouglas/dsh-antigravity-acp/issues/1
  */
 const REASONING_META = {
@@ -46,20 +46,28 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   private generations = 0;
   private warnedTools = false;
   private catalog: { id: string; name: string }[] = [];
+  private catalogCheckedAt = 0;
+  private reasoning = REASONING_META;
+  private contextWindows = new Map<string, number>();
   constructor(
     readonly config: Config,
     private runtime: SubprocessRuntime,
     private warn: (message: string) => void = () => {},
+    private readImage?: ImageReader,
   ) {
     super();
     this.controlClient = new AcpClient(config, runtime, warn);
-    this.tools = new ToolSessions(config, runtime, warn);
+    this.tools = new ToolSessions(config, runtime, warn, readImage, (model, update) => this.observeCapacity(model, update));
+  }
+  private observeCapacity(model: string, update: import('@agentclientprotocol/sdk').SessionUpdate): void {
+    if (update.sessionUpdate === 'usage_update' && Number.isSafeInteger(update.size) && update.size > 0)
+      this.contextWindows.set(model, update.size);
   }
   get client(): AcpClient {
     return this.controlClient;
   }
   providerInfo(provider: string) {
-    return { id: provider, name: 'Antigravity (official ACP)' };
+    return { id: provider, name: 'Agy' };
   }
 
   private async acquire(signal?: AbortSignal): Promise<() => void> {
@@ -91,9 +99,14 @@ export class AntigravityAcpAdapter extends LlmAdapter {
   async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const release = await this.acquire(this.lifetime.signal);
     try {
-      if (!this.catalog.length) {
+      if ((!this.catalogCheckedAt || Date.now() - this.catalogCheckedAt >= this.config.catalogRefreshMs) && !this.tools.active) {
+        this.catalogCheckedAt = Date.now();
         try {
-          this.catalog = modelCatalog(await this.client.newSession(this.lifetime.signal, false));
+          const session = await this.client.newSession(this.lifetime.signal, false);
+          const discovered = modelCatalog(session);
+          if (discovered.length) this.catalog = discovered;
+          const thought = session.configOptions?.find(c => c.category === 'thought_level');
+          if (thought) this.reasoning = { efforts: selectValues(thought).map(c => ({ id: ReasoningEffortId(c.value), name: c.name })) };
           if (
             this.config.toolPolicy === 'bridge' &&
             this.catalog.length &&
@@ -122,9 +135,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       return [...entries.values()].map((m) => ({
         ...m,
         provider,
-        inputModalities: ['text'],
+        inputModalities: this.readImage ? ['text', 'image'] : ['text'],
         description: 'Official ACP backend with DSH tools through MCP',
-        reasoning: REASONING_META,
+        reasoning: this.reasoning,
       }));
     } finally {
       release();
@@ -140,8 +153,9 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       provider,
       id: model,
       name: this.catalog.find((m) => m.id === model)?.name ?? model,
-      inputModalities: ['text'],
-      reasoning: REASONING_META,
+      inputModalities: this.readImage ? ['text', 'image'] : ['text'],
+      reasoning: this.reasoning,
+      ...(this.contextWindows.has(model) ? { context: { contextWindow: this.contextWindows.get(model)! } } : {}),
     };
   }
   diagnostics() {
@@ -154,7 +168,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       idleToolProcesses: this.tools.idle,
     };
   }
-  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+  async *stream(options: ForwardingOptions): AsyncIterable<StreamChunk> {
     options = {
       ...options,
       signal: options.signal
@@ -165,7 +179,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       yield* this.tools.stream(options);
       return;
     }
-    const prompt = buildPrompt(options, this.config); // Validate before spawning or authenticating.
+    const prompt = await buildAcpPrompt(options, this.config, this.readImage);
     const release = await this.acquire(options.signal);
     const borrowed = this.tools.borrowReadyClient();
     const client = borrowed ?? this.client;
@@ -187,7 +201,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       const session = client.takeUnusedSession() ?? (await client.newSession(options.signal));
       sessionId = session.sessionId;
       this.catalog = modelCatalog(session);
-      await client.selectModel(session, options.model, options.signal);
+      await client.selectModel(session, options.model, options.signal, options.reasoningEffort);
       this.generations++;
       const nativeTools = () => {
         error = new LlmError(
@@ -200,6 +214,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       client.onPermission = nativeTools;
       client.onUpdate = (event) => {
         if (event.sessionId !== sessionId || done) return;
+        this.observeCapacity(options.model, event.update);
         if (
           event.update.sessionUpdate === 'tool_call' ||
           event.update.sessionUpdate === 'tool_call_update'
