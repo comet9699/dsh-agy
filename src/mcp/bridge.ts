@@ -26,6 +26,7 @@ export class DshMcpBridge {
     tools: readonly ToolSchema[],
     private onCall: (call: ToolCallBlock) => Promise<CallToolResult>,
     private acpToolMetadata: 'structured' | 'agy-title' = 'structured',
+    readonly serverName = 'dsh-bridge',
   ) {
     // Harness owns tool admission. Preserve its complete catalog; plugin tools
     // must not make an otherwise valid conversation fail an adapter count cap.
@@ -64,11 +65,11 @@ export class DshMcpBridge {
     if (!meta) {
       // Local agy 1.5 emits exact server-generated titles instead of MCP metadata.
       // This recognizes advisory updates only; dispatch still requires an authenticated MCP request.
-      return this.acpToolMetadata === 'agy-title' && this.tools.some(t => call.title === `Run mcp_dsh-bridge_${t.mcpName}`);
+      return this.acpToolMetadata === 'agy-title' && this.tools.some(t => call.title === `Run mcp_${this.serverName}_${t.mcpName}`);
     }
     if (typeof meta !== 'object') return false;
     const { server, tool } = meta as Record<string, unknown>;
-    return server === 'dsh-bridge' && this.tools.some((t) => t.mcpName === tool);
+    return server === this.serverName && this.tools.some((t) => t.mcpName === tool);
   }
   async start(): Promise<McpServerHttp & { type: 'http' }> {
     if (this.http) throw new LlmError('MCP bridge already started.', 'ACP_BRIDGE_STATE');
@@ -90,7 +91,7 @@ export class DshMcpBridge {
       throw new LlmError('Cannot bind MCP bridge.', 'ACP_BRIDGE_STATE');
     return {
       type: 'http',
-      name: 'dsh-bridge',
+      name: this.serverName,
       url: `http://127.0.0.1:${address.port}/mcp`,
       headers: [{ name: 'Authorization', value: `Bearer ${this.token}` }],
     };
@@ -132,7 +133,7 @@ export class DshMcpBridge {
     }
     const body: unknown = JSON.parse(Buffer.concat(parts).toString('utf8'));
     const protocol = new Server(
-      { name: 'dsh-bridge', version: '0.3.4' },
+      { name: this.serverName, version: '0.3.4' },
       { capabilities: { tools: {} } },
     );
     this.protocols.add(protocol);

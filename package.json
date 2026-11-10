@@ -1,6 +1,6 @@
 {
   "name": "dsh-agy",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Community local agy ACP provider for DeepSeek Harness 0.2.2-rc.1",
   "type": "module",
   "license": "MIT",

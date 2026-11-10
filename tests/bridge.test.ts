@@ -42,6 +42,15 @@ async function fixture(
   return { bridge, client, descriptor };
 }
 describe('local MCP bridge', () => {
+  it('rejects advisory permissions belonging to a previous bridge lease', async () => {
+    const bridge = new DshMcpBridge([{ name: 'read', description: '', parameters: { type: 'object' } }], async () => ({ content: [] }), 'agy-title', 'dsh-bridge-abcdef123456');
+    live.push(bridge);
+    const tool = bridge.tools[0]!.mcpName;
+    expect(bridge.owns({ title: `Run mcp_dsh-bridge-abcdef123456_${tool}` })).toBe(true);
+    expect(bridge.owns({ title: `Run mcp_dsh-bridge-000000000000_${tool}` })).toBe(false);
+    expect(bridge.owns({ _meta: { mcp: { server: 'dsh-bridge-000000000000', tool } } })).toBe(false);
+    expect(bridge.owns({ _meta: { mcp: { server: bridge.serverName, tool } } })).toBe(true);
+  });
   it('lists all 300 admitted tools and dispatches the last one without truncation', async () => {
     const catalog = Array.from({ length: 300 }, (_, i) => ({ name: `plugin.tool_${i}`, description: `Tool ${i}`, parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false } }));
     const dispatched: string[] = [];

@@ -39136,9 +39136,10 @@ function mcpToolName(name2) {
   return `dsh_${name2.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}_${hash2}`;
 }
 var DshMcpBridge = class {
-  constructor(tools, onCall, acpToolMetadata = "structured") {
+  constructor(tools, onCall, acpToolMetadata = "structured", serverName = "dsh-bridge") {
     this.onCall = onCall;
     this.acpToolMetadata = acpToolMetadata;
+    this.serverName = serverName;
     const names = /* @__PURE__ */ new Set();
     const ajv = new import_ajv2.Ajv({ strict: false, validateFormats: false, logger: false });
     const ajv2020 = new import__.Ajv2020({ strict: false, validateFormats: false, logger: false });
@@ -39168,6 +39169,7 @@ var DshMcpBridge = class {
   }
   onCall;
   acpToolMetadata;
+  serverName;
   tools;
   token = randomBytes(32).toString("hex");
   http;
@@ -39175,11 +39177,11 @@ var DshMcpBridge = class {
   owns(call) {
     const meta3 = call._meta?.mcp;
     if (!meta3) {
-      return this.acpToolMetadata === "agy-title" && this.tools.some((t) => call.title === `Run mcp_dsh-bridge_${t.mcpName}`);
+      return this.acpToolMetadata === "agy-title" && this.tools.some((t) => call.title === `Run mcp_${this.serverName}_${t.mcpName}`);
     }
     if (typeof meta3 !== "object") return false;
     const { server, tool } = meta3;
-    return server === "dsh-bridge" && this.tools.some((t) => t.mcpName === tool);
+    return server === this.serverName && this.tools.some((t) => t.mcpName === tool);
   }
   async start() {
     if (this.http) throw new LlmError5("MCP bridge already started.", "ACP_BRIDGE_STATE");
@@ -39201,7 +39203,7 @@ var DshMcpBridge = class {
       throw new LlmError5("Cannot bind MCP bridge.", "ACP_BRIDGE_STATE");
     return {
       type: "http",
-      name: "dsh-bridge",
+      name: this.serverName,
       url: `http://127.0.0.1:${address.port}/mcp`,
       headers: [{ name: "Authorization", value: `Bearer ${this.token}` }]
     };
@@ -39243,7 +39245,7 @@ var DshMcpBridge = class {
     }
     const body = JSON.parse(Buffer.concat(parts).toString("utf8"));
     const protocol = new Server(
-      { name: "dsh-bridge", version: "0.3.4" },
+      { name: this.serverName, version: "0.3.4" },
       { capabilities: { tools: {} } }
     );
     this.protocols.add(protocol);
@@ -39295,7 +39297,7 @@ var DshMcpBridge = class {
 };
 
 // src/prompt.ts
-function buildPrompt(options2, config2, images = false) {
+function buildPrompt(options2, config2, images = false, mcpServer = "dsh-bridge") {
   validateOptions(options2, config2);
   const messages = options2.messages.map((m) => ({
     role: m.role,
@@ -39308,7 +39310,7 @@ function buildPrompt(options2, config2, images = false) {
       return b;
     })
   }));
-  return promptText(options2, config2, messages);
+  return promptText(options2, config2, messages, mcpServer);
 }
 function validateOptions(options2, config2) {
   for (const key of ["temperature", "maxTokens"]) {
@@ -39326,12 +39328,12 @@ function validateOptions(options2, config2) {
       "UNSUPPORTED_OPTION"
     );
 }
-function promptText(options2, config2, messages) {
+function promptText(options2, config2, messages, mcpServer) {
   return [
     "DeepSeek Harness owns this conversation. Produce only the next assistant response using the supplied conversation.",
     ...config2.toolPolicy === "bridge" && options2.tools?.length ? [
-      "Use only tools supplied by the dsh-bridge MCP server. These are the real DeepSeek Harness tools, including file and terminal tools. Call them using their MCP names and schemas.",
-      "Never use built-in Antigravity tools, slash commands, skills, file access, terminals, or network tools outside dsh-bridge. Do not use a native tool to find MCP tools; the MCP catalog is already supplied.",
+      `Use only tools supplied by the ${mcpServer} MCP server. These are the real DeepSeek Harness tools. Their descriptions and parameter schemas are already available in that server catalog; use their MCP names and schemas.`,
+      `Never use built-in Antigravity tools, slash commands, skills, file access, terminals, or network tools outside ${mcpServer}. Do not use a native tool to find MCP tools; the MCP catalog is already supplied.`,
       "Each MCP call is executed by DSH with its current permissions. A denied or failed tool result is authoritative; do not bypass it or repeat the action through another tool."
     ] : [
       "This is a text-only backend. Do not invoke native tools, slash commands, skills, file access, terminals, network tools, or MCP.",
@@ -39342,12 +39344,10 @@ function promptText(options2, config2, messages) {
       system: options2.system ?? null,
       messages,
       ...config2.toolPolicy === "bridge" && options2.tools?.length ? {
+        dshMcpServer: mcpServer,
         dshMcpTools: options2.tools.map((tool) => ({
-          mcpServer: "dsh-bridge",
           mcpName: mcpToolName(tool.name),
-          dshName: tool.name,
-          description: tool.description,
-          parameters: tool.parameters
+          dshName: tool.name
         }))
       } : {}
     })
@@ -39366,8 +39366,8 @@ async function encodeImage(image, reader, signal) {
   if (signal?.aborted) throw new LlmError6("Image request cancelled.", "ABORTED");
   return { type: "image", data: Buffer.from(stored.data).toString("base64"), mimeType: stored.mediaType };
 }
-async function buildAcpPrompt(options2, config2, reader) {
-  const content = [{ type: "text", text: buildPrompt(options2, config2, !!reader) }];
+async function buildAcpPrompt(options2, config2, reader, mcpServer = "dsh-bridge") {
+  const content = [{ type: "text", text: buildPrompt(options2, config2, !!reader, mcpServer) }];
   for (const message of options2.messages) for (const block of message.content) {
     if (block.type !== "image" || block.offloaded) continue;
     content.push(
@@ -39569,7 +39569,7 @@ var ToolSessions = class {
       }, 10);
     return result;
   }
-  async create(o) {
+  async create(o, serverName) {
     if (this.bindings.size >= this.config.maxActiveToolSessions)
       throw new LlmError7(
         "Too many active ACP tool sessions. Finish or cancel an existing turn.",
@@ -39594,7 +39594,7 @@ var ToolSessions = class {
       stop: "",
       listeners: []
     };
-    b.bridge = new DshMcpBridge(o.tools ?? [], (call) => this.queueTool(b, call), this.config.acpToolMetadata);
+    b.bridge = new DshMcpBridge(o.tools ?? [], (call) => this.queueTool(b, call), this.config.acpToolMetadata, serverName);
     this.bindings.set(key, b);
     this.watch(b, o.signal);
     try {
@@ -39710,15 +39710,16 @@ var ToolSessions = class {
       b = void 0;
       fresh = true;
     }
+    const serverName = b?.bridge.serverName ?? (this.config.maxSessionsPerProcess > 1 ? `dsh-bridge-${randomUUID().replaceAll("-", "").slice(0, 12)}` : "dsh-bridge");
     let prompt = [];
     try {
       validateOptions(o, this.config);
-      if (fresh) prompt = await buildAcpPrompt(o, this.config, this.readImage);
+      if (fresh) prompt = await buildAcpPrompt(o, this.config, this.readImage, serverName);
     } catch (error62) {
       if (b) await this.close(b);
       throw error62;
     }
-    b ??= await this.create(o);
+    b ??= await this.create(o, serverName);
     const w = {
       mapper: new EventMapper(),
       queue: [],

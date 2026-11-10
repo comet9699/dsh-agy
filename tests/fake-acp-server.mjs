@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+const serverCache = new Map();
 const bridges = new Map(),
   replies = new Map();
 let prompts = 0;
@@ -73,7 +74,8 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
     if (variant === 'auth' && !authCalls)
       return send({ id, error: { code: -32000, message: 'Authentication required' } });
     const sid = 's' + ++sessions;
-    bridges.set(sid, p.mcpServers);
+    const descriptors = variant === 'bridge-cache' ? (p.mcpServers ?? []).map(d => { if (!serverCache.has(d.name)) serverCache.set(d.name, d); return serverCache.get(d.name); }) : p.mcpServers;
+    bridges.set(sid, descriptors);
     return ok({ sessionId: sid, configOptions });
   }
   if (method === 'session/set_config_option') { selections[p.configId] = p.value; return ok({ configOptions }); }
@@ -135,10 +137,10 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
         const acpId = 'native-' + path;
         const toolCall = {
           toolCallId: acpId,
-          title: 'dsh-bridge_' + tools[0].name,
+          title: 'Run mcp_' + descriptor.name + '_' + tools[0].name,
           status: 'pending',
           kind: 'other',
-          _meta: { mcp: { server: 'dsh-bridge', tool: tools[0].name }, is_mcp_tool_call: true },
+          _meta: { mcp: { server: descriptor.name, tool: tools[0].name }, is_mcp_tool_call: true },
         };
         update(sid, { sessionUpdate: 'tool_call', ...toolCall });
         const rid = 'permission-' + path;

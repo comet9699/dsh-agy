@@ -3,7 +3,7 @@ import { LlmError, type GenerateOptions, type ImageBlock } from '@deepseek-ai/ds
 import type { ContentBlock } from '@agentclientprotocol/sdk';
 import type { Config } from './config.js';
 import { mcpToolName } from './mcp/bridge.js';
-export function buildPrompt(options: ForwardingOptions, config: Config, images = false): string {
+export function buildPrompt(options: ForwardingOptions, config: Config, images = false, mcpServer = 'dsh-bridge'): string {
   // Model and thinking selections are applied separately through ACP session configuration.
   validateOptions(options, config);
   const messages = options.messages.map((m) => ({
@@ -17,7 +17,7 @@ export function buildPrompt(options: ForwardingOptions, config: Config, images =
       return b;
     }),
   }));
-  return promptText(options, config, messages);
+  return promptText(options, config, messages, mcpServer);
 }
 /** Validate unsupported request controls before creating or resuming an ACP exchange. */
 export function validateOptions(options: ForwardingOptions, config: Config): void {
@@ -39,13 +39,13 @@ export function validateOptions(options: ForwardingOptions, config: Config): voi
       'UNSUPPORTED_OPTION',
     );
 }
-function promptText(options: ForwardingOptions, config: Config, messages: object[]): string {
+function promptText(options: ForwardingOptions, config: Config, messages: object[], mcpServer: string): string {
   return [
     'DeepSeek Harness owns this conversation. Produce only the next assistant response using the supplied conversation.',
     ...(config.toolPolicy === 'bridge' && options.tools?.length
       ? [
-          'Use only tools supplied by the dsh-bridge MCP server. These are the real DeepSeek Harness tools, including file and terminal tools. Call them using their MCP names and schemas.',
-          'Never use built-in Antigravity tools, slash commands, skills, file access, terminals, or network tools outside dsh-bridge. Do not use a native tool to find MCP tools; the MCP catalog is already supplied.',
+          `Use only tools supplied by the ${mcpServer} MCP server. These are the real DeepSeek Harness tools. Their descriptions and parameter schemas are already available in that server catalog; use their MCP names and schemas.`,
+          `Never use built-in Antigravity tools, slash commands, skills, file access, terminals, or network tools outside ${mcpServer}. Do not use a native tool to find MCP tools; the MCP catalog is already supplied.`,
           'Each MCP call is executed by DSH with its current permissions. A denied or failed tool result is authoritative; do not bypass it or repeat the action through another tool.',
         ]
       : [
@@ -58,12 +58,10 @@ function promptText(options: ForwardingOptions, config: Config, messages: object
       messages,
       ...(config.toolPolicy === 'bridge' && options.tools?.length
         ? {
+            dshMcpServer: mcpServer,
             dshMcpTools: options.tools.map((tool) => ({
-              mcpServer: 'dsh-bridge',
               mcpName: mcpToolName(tool.name),
               dshName: tool.name,
-              description: tool.description,
-              parameters: tool.parameters,
             })),
           }
         : {}),
@@ -87,8 +85,8 @@ export async function encodeImage(image: ImageBlock, reader?: ImageReader, signa
   return { type: 'image', data: Buffer.from(stored.data).toString('base64'), mimeType: stored.mediaType };
 }
 /** Preserve history roles in text and associate image bytes with their durable ids. */
-export async function buildAcpPrompt(options: ForwardingOptions, config: Config, reader?: ImageReader): Promise<ContentBlock[]> {
-  const content: ContentBlock[] = [{ type: 'text', text: buildPrompt(options, config, !!reader) }];
+export async function buildAcpPrompt(options: ForwardingOptions, config: Config, reader?: ImageReader, mcpServer = 'dsh-bridge'): Promise<ContentBlock[]> {
+  const content: ContentBlock[] = [{ type: 'text', text: buildPrompt(options, config, !!reader, mcpServer) }];
   for (const message of options.messages) for (const block of message.content) {
     if (block.type !== 'image' || block.offloaded) continue;
     content.push({ type: 'text', text: `Image attachment ${block.attachment.attachmentId} from the ${message.role} message:` },

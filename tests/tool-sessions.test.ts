@@ -94,6 +94,19 @@ function answer(o: ForwardingOptions, cs: StreamChunk[], isError = false): Forwa
   };
 }
 describe('DSH tool round trips over ACP + MCP', () => {
+  it('avoids retained MCP aliases while reusing a process with fresh scoped bridges', async () => {
+    const { adapter, options, runtime } = fixture('bridge-cache', { maxSessionsPerProcess: 8 });
+    const spawn = vi.spyOn(runtime, 'spawn');
+    const first = await collect(adapter, options);
+    const firstDone = await collect(adapter, answer(options, first));
+    expect(firstDone.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } });
+    const secondOptions = { ...options, sessionId: SessionId('separate-chat'), tools: [{ ...options.tools![0]!, name: 'different_reader' }] };
+    const second = await collect(adapter, secondOptions);
+    expect(calls(second)[0]!.name).toBe('different_reader');
+    const secondDone = await collect(adapter, answer(secondOptions, second));
+    expect(secondDone.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } });
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
   it('returns image bytes from tools and reads them once across sequential calls', async () => {
     const reader = vi.fn<ImageReader>(async () => ({ data: new Uint8Array([1, 2, 3]), mediaType: 'image/png' }));
     const { adapter, options } = fixture('bridge-sequential', {}, reader);

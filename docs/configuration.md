@@ -8,7 +8,7 @@ Use Harness's plugin settings. A profile config override replaces the row's conf
     provider: agy-local-acp
     mcpTransport: stdio
     acpToolMetadata: agy-title
-    maxSessionsPerProcess: 1
+    maxSessionsPerProcess: 8
     command: C:/Tools/agy/agy.exe
     args: [acp]
     autoInstall: false
@@ -43,3 +43,5 @@ node dist/cli.js doctor --command C:/Tools/agy/agy.exe --arg acp
 ```
 
 `doctor`/`status` discover the server without generating a model answer; `probe` consumes account quota. Browser sign-in is managed by agy. Never send verification codes to a plugin author.
+
+The beta.2 bundle uses a distinct MCP server name and authenticated endpoint for every turn, allowing up to 8 fresh native sessions per process. Set `maxSessionsPerProcess: 1` to retain the earlier recycle-every-turn behavior if your agy version cannot handle scoped MCP names. Completed conversations are still reconstructed from Harness history, and errors/cancellation discard the child.

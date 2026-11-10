@@ -6,7 +6,7 @@
         autoInstall: false
         mcpTransport: stdio
         acpToolMetadata: agy-title
-        maxSessionsPerProcess: 1
+        maxSessionsPerProcess: 8
     - id: agy-compaction
       name: dsh-agy/compaction
     - id: web-search-agy

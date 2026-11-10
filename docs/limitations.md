@@ -9,5 +9,5 @@
 - Catalog refresh happens when Harness queries the provider catalog; it is not a guaranteed live UI push update.
 - Quota is fetched on demand, cached, and may be stale or unavailable during work. It is not a billing guarantee.
 - Automatic idle compaction uses a local historical-token maintenance budget. Unknown model context capacity remains unknown; it is not reported as an invented 1M window. Failed or canceled summaries are rejected and prior context is retained.
-- Each independent turn may recycle the ACP child to avoid retained MCP aliases. Startup overhead is expected. Streaming tool exchanges retain their child until the exchange settles.
+- Every independent turn receives a new native session and isolated MCP name/endpoint. A completed healthy process can serve up to 8 sessions; errors, cancellation or the session cap recycle it. Startup and upstream model overhead remain. Streaming tool exchanges retain their session until the exchange settles.
 - No overnight stability, scrolling performance or arbitrary third-party plugin compatibility claim is made for this public beta.

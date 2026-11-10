@@ -230,7 +230,7 @@ export class ToolSessions {
       }, 10);
     return result;
   }
-  private async create(o: ForwardingOptions): Promise<Binding> {
+  private async create(o: ForwardingOptions, serverName: string): Promise<Binding> {
     if (this.bindings.size >= this.config.maxActiveToolSessions)
       throw new LlmError(
         'Too many active ACP tool sessions. Finish or cancel an existing turn.',
@@ -255,7 +255,7 @@ export class ToolSessions {
       stop: '',
       listeners: [],
     };
-    b.bridge = new DshMcpBridge(o.tools ?? [], (call) => this.queueTool(b, call), this.config.acpToolMetadata);
+    b.bridge = new DshMcpBridge(o.tools ?? [], (call) => this.queueTool(b, call), this.config.acpToolMetadata, serverName);
     this.bindings.set(key, b);
     this.watch(b, o.signal);
     try {
@@ -385,15 +385,16 @@ export class ToolSessions {
     if (b && !this.matches(b, o)) {
       await this.close(b); b = undefined; fresh = true;
     }
+    const serverName = b?.bridge.serverName ?? (this.config.maxSessionsPerProcess > 1 ? `dsh-bridge-${randomUUID().replaceAll('-', '').slice(0, 12)}` : 'dsh-bridge');
     let prompt: import('@agentclientprotocol/sdk').ContentBlock[] = [];
     try {
       validateOptions(o, this.config);
-      if (fresh) prompt = await buildAcpPrompt(o, this.config, this.readImage);
+      if (fresh) prompt = await buildAcpPrompt(o, this.config, this.readImage, serverName);
     } catch (error) {
       if (b) await this.close(b);
       throw error;
     }
-    b ??= await this.create(o);
+    b ??= await this.create(o, serverName);
     const w: Writer = {
       mapper: new EventMapper(),
       queue: [],
