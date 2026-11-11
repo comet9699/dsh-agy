@@ -6,6 +6,8 @@ Community **local agy ACP provider for DeepSeek Harness 0.2.2-rc.1**. Uses the l
 
 [中文说明](README.zh-CN.md)
 
+Observed waiting stages distinguish local connection, upstream-model waiting and tool-result waiting. For a tracked timeout/disconnect, the selected turn offers explicit continuation or Flash selection followed by continuation through Harness's existing APIs. There is no automatic retry; the continuation asks the model to inspect prior results before acting. This does not remove upstream latency. Stage facts are ephemeral; see [limitations](docs/limitations.md).
+
 ## Install
 
 In Harness **Plugins → Add plugin**, enter the repository URL:

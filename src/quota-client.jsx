@@ -2,6 +2,8 @@ import React,{useEffect,useRef,useState}from'react';
 import{createPortal}from'react-dom';
 import{observeQuotaVisibility}from'./quota-visibility.mjs';
 import{installRunningBrand}from'./running-brand.mjs';
+import{createActivityClient}from'./activity-client.mjs';
+import{installRecovery}from'./recovery-client.jsx';
 export const inject=['slots','sidebarRight','modelDirectories','sessions','remote','remote.session'];
 const css=`.agy-quota-button{border:0;background:transparent;color:inherit;display:flex;align-items:center;gap:7px;padding:8px 10px;border-radius:9px;cursor:pointer;font:inherit;font-size:13px}.agy-quota-button:hover{background:rgba(128,128,128,.1)}.agy-quota-card{position:fixed;left:16px;bottom:64px;width:min(330px,calc(100vw - 32px));max-height:min(650px,75vh);overflow:auto;padding:18px;background:var(--background,#fff);color:var(--foreground,#252932);border:1px solid rgba(128,128,128,.2);border-radius:16px;box-shadow:0 12px 45px rgba(0,0,0,.13);z-index:10000;font-size:13px;font-family:inherit}.agy-quota-card header{display:flex;align-items:center;justify-content:space-between;font-size:15px;font-weight:600}.agy-quota-card button{border:0;border-radius:7px;padding:5px 8px;background:transparent;color:inherit;cursor:pointer}.agy-quota-card button:hover{background:rgba(128,128,128,.1)}.agy-quota-group{margin-top:18px}.agy-quota-row{display:flex;justify-content:space-between;gap:12px;margin:12px 0 6px}.agy-quota-track{height:5px;border-radius:5px;background:rgba(128,128,128,.16);overflow:hidden}.agy-quota-bar{height:100%;border-radius:5px;background:linear-gradient(90deg,#5689ed,#56b5cf)}.agy-quota-note{font-size:11px;opacity:.62;line-height:1.6;margin-top:5px}.agy-quota-icon{font-size:20px;background:linear-gradient(135deg,#4285f4,#a76cdd,#5abec5);background-clip:text;-webkit-text-fill-color:transparent}`;
 const title=name=>/weekly/i.test(name)?'每周额度':/five.*hour/i.test(name)?'5 小时额度':name;
@@ -35,11 +37,14 @@ function Footer({wide=true,openSettings}){
 }
 export function apply(ctx){ctx.effect(()=>ctx.slots.inject('settings.launcher',()=>{
  const runningBrand=installRunningBrand(document);
+ const activity=createActivityClient(ctx,snapshot=>runningBrand.setProgress(snapshot));
+ const recovery=installRecovery(ctx,activity);
  let remove=null;
  const stop=observeQuotaVisibility(ctx,visible=>{
   runningBrand.setActive(visible);
+  activity.select(visible?ctx.sidebarRight.mounted.getSnapshot():null);
   if(visible){remove??=ctx.slots.register({name:'settings.launcher',id:'agy-local-account',priority:-100},Footer);}
   else{remove?.();remove=null;}
  });
- return()=>{stop();remove?.();runningBrand.dispose();};
+ return()=>{stop();remove?.();recovery?.();activity.dispose();runningBrand.dispose();};
 }));}

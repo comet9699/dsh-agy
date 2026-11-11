@@ -16,6 +16,7 @@ import { aborted, classify } from '../acp/errors.js';
 import { buildAcpPrompt, encodeImage, validateOptions, type ImageReader } from '../prompt.js';
 import type { Config } from '../config.js';
 import { DshMcpBridge } from './bridge.js';
+import type { ProgressSink } from '../activity.js';
 
 interface Pending {
   call: ToolCallBlock;
@@ -31,6 +32,7 @@ interface Writer {
 }
 interface Binding {
   key: string;
+  activityId?: string;
   client: AcpClient;
   bridge: DshMcpBridge;
   controller: AbortController;
@@ -91,6 +93,7 @@ export class ToolSessions {
     private notify: (message: string) => void,
     private readImage?: ImageReader,
     private observeCapacity?: (model: string, update: import('@agentclientprotocol/sdk').SessionUpdate) => void,
+    private progress?: ProgressSink,
   ) {}
   get active(): number {
     return this.bindings.size;
@@ -186,7 +189,7 @@ export class ToolSessions {
         new LlmError(
           code === 'ACP_TOOL_TIMEOUT'
             ? 'DSH did not return the tool result before the bridge deadline. Retry from the saved DSH conversation.'
-            : 'Official ACP generation timed out.',
+            : 'Agy 等待模型回复超时，对话和已有工具结果仍保留。可继续任务，或切换 Flash 后继续；请先核对已有操作，不要盲目重复执行命令。',
           code,
         ),
       );
@@ -217,6 +220,7 @@ export class ToolSessions {
         content: [{ type: 'text', text: 'Too many concurrent DSH tool calls.' }],
       });
     clearTimeout(b.timer);
+    this.progress?.(b.activityId, 'waiting-tool');
     this.deadline(b, this.config.toolTimeoutMs, 'ACP_TOOL_TIMEOUT');
     const result = new Promise<CallToolResult>((resolve) =>
       b.pending.set(call.id, { call, resolve, exposed: false }),
@@ -244,6 +248,7 @@ export class ToolSessions {
     }
     const b: Binding = {
       key,
+      activityId: o.purpose ? undefined : o.sessionId,
       client,
       bridge: undefined!,
       controller: new AbortController(),
@@ -259,6 +264,7 @@ export class ToolSessions {
     this.bindings.set(key, b);
     this.watch(b, o.signal);
     try {
+      this.progress?.(b.activityId, 'connecting');
       await client.start(b.controller.signal);
       if (this.config.mcpTransport === 'http' && !client.initializeResult?.agentCapabilities?.mcpCapabilities?.http)
         throw new LlmError(
@@ -275,12 +281,15 @@ export class ToolSessions {
           { name: 'DSH_ACP_BRIDGE_AUTH', value: http.headers[0]!.value },
         ],
       } : http;
+      this.progress?.(b.activityId, 'opening-session');
       const session = await client.newSession(b.controller.signal, true, [descriptor]);
       b.sessionId = session.sessionId;
+      this.progress?.(b.activityId, 'selecting-model');
       await client.selectModel(session, o.model, b.controller.signal, o.reasoningEffort);
       client.onUpdate = (event) => {
         if (event.sessionId !== b.sessionId || b.done) return;
         const u = event.update;
+        if (u.sessionUpdate === 'agent_message_chunk' || u.sessionUpdate === 'agent_thought_chunk') this.progress?.(b.activityId, 'responding');
         this.observeCapacity?.(o.model, u);
         if (u.sessionUpdate === 'tool_call' || u.sessionUpdate === 'tool_call_update') {
           if (b.bridge.owns(u)) b.trustedAcpIds.add(u.toolCallId);
@@ -386,6 +395,7 @@ export class ToolSessions {
       await this.close(b); b = undefined; fresh = true;
     }
     const serverName = b?.bridge.serverName ?? (this.config.maxSessionsPerProcess > 1 ? `dsh-bridge-${randomUUID().replaceAll('-', '').slice(0, 12)}` : 'dsh-bridge');
+    if (fresh) this.progress?.(o.purpose ? undefined : o.sessionId, 'preparing');
     let prompt: import('@agentclientprotocol/sdk').ContentBlock[] = [];
     try {
       validateOptions(o, this.config);
@@ -404,6 +414,7 @@ export class ToolSessions {
     try {
       if (fresh) {
         this.generations++;
+        this.progress?.(b.activityId, 'waiting-model');
         this.deadline(b, this.config.timeoutMs, 'ACP_TIMEOUT');
         // Per-segment generation and tool deadlines above own the budget while MCP is parked.
         void b.client.prompt(b.sessionId!, prompt, b.controller.signal, 2147483647).then(
@@ -417,6 +428,7 @@ export class ToolSessions {
       } else {
         this.watch(b, o.signal);
         await this.resume(b, o);
+        this.progress?.(b.activityId, 'waiting-model');
       }
       while (true) {
         while (w.queue.length) {
@@ -456,8 +468,10 @@ export class ToolSessions {
         throw new LlmError('Official ACP server ended without assistant text.', 'EMPTY_RESPONSE');
       yield* w.mapper.end();
       completed = b.stop === 'end_turn';
+      this.progress?.(b.activityId, completed ? 'complete' : 'cancelled');
       yield { type: 'finish', reason: finishReason(b.stop) };
     } catch (error) {
+      this.progress?.(b.activityId, o.signal?.aborted ? 'cancelled' : 'failed', classify(b.error ?? error).code);
       throw o.signal?.aborted ? aborted() : classify(b.error ?? error);
     } finally {
       clearTimeout(w.batch);

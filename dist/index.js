@@ -33057,7 +33057,7 @@ function classify(error62) {
     );
   }
   return new LlmError(
-    "Connection to the official ACP server ended. Retry to reconnect.",
+    "Agy \u8FDE\u63A5\u5DF2\u4E2D\u65AD\uFF0C\u5BF9\u8BDD\u8BB0\u5F55\u4ECD\u4FDD\u7559\u3002\u53EF\u7EE7\u7EED\u4EFB\u52A1\uFF0C\u6216\u5207\u6362\u6A21\u578B\u540E\u7EE7\u7EED\uFF1B\u8BF7\u5148\u6838\u5BF9\u5DF2\u6709\u64CD\u4F5C\uFF0C\u4E0D\u8981\u76F2\u76EE\u91CD\u590D\u6267\u884C\u547D\u4EE4\u3002",
     "ACP_DISCONNECTED"
   );
 }
@@ -39409,18 +39409,20 @@ var unavailable = () => ({
   ]
 });
 var ToolSessions = class {
-  constructor(config2, runtime, notify, readImage, observeCapacity) {
+  constructor(config2, runtime, notify, readImage, observeCapacity, progress) {
     this.config = config2;
     this.runtime = runtime;
     this.notify = notify;
     this.readImage = readImage;
     this.observeCapacity = observeCapacity;
+    this.progress = progress;
   }
   config;
   runtime;
   notify;
   readImage;
   observeCapacity;
+  progress;
   bindings = /* @__PURE__ */ new Map();
   closing = /* @__PURE__ */ new Set();
   idleClients = /* @__PURE__ */ new Map();
@@ -39523,7 +39525,7 @@ var ToolSessions = class {
       this.fail(
         b,
         new LlmError7(
-          code === "ACP_TOOL_TIMEOUT" ? "DSH did not return the tool result before the bridge deadline. Retry from the saved DSH conversation." : "Official ACP generation timed out.",
+          code === "ACP_TOOL_TIMEOUT" ? "DSH did not return the tool result before the bridge deadline. Retry from the saved DSH conversation." : "Agy \u7B49\u5F85\u6A21\u578B\u56DE\u590D\u8D85\u65F6\uFF0C\u5BF9\u8BDD\u548C\u5DF2\u6709\u5DE5\u5177\u7ED3\u679C\u4ECD\u4FDD\u7559\u3002\u53EF\u7EE7\u7EED\u4EFB\u52A1\uFF0C\u6216\u5207\u6362 Flash \u540E\u7EE7\u7EED\uFF1B\u8BF7\u5148\u6838\u5BF9\u5DF2\u6709\u64CD\u4F5C\uFF0C\u4E0D\u8981\u76F2\u76EE\u91CD\u590D\u6267\u884C\u547D\u4EE4\u3002",
           code
         )
       );
@@ -39556,6 +39558,7 @@ var ToolSessions = class {
         content: [{ type: "text", text: "Too many concurrent DSH tool calls." }]
       });
     clearTimeout(b.timer);
+    this.progress?.(b.activityId, "waiting-tool");
     this.deadline(b, this.config.toolTimeoutMs, "ACP_TOOL_TIMEOUT");
     const result = new Promise(
       (resolve2) => b.pending.set(call.id, { call, resolve: resolve2, exposed: false })
@@ -39583,6 +39586,7 @@ var ToolSessions = class {
     }
     const b = {
       key,
+      activityId: o.purpose ? void 0 : o.sessionId,
       client: client2,
       bridge: void 0,
       controller: new AbortController(),
@@ -39598,6 +39602,7 @@ var ToolSessions = class {
     this.bindings.set(key, b);
     this.watch(b, o.signal);
     try {
+      this.progress?.(b.activityId, "connecting");
       await client2.start(b.controller.signal);
       if (this.config.mcpTransport === "http" && !client2.initializeResult?.agentCapabilities?.mcpCapabilities?.http)
         throw new LlmError7(
@@ -39614,12 +39619,15 @@ var ToolSessions = class {
           { name: "DSH_ACP_BRIDGE_AUTH", value: http.headers[0].value }
         ]
       } : http;
+      this.progress?.(b.activityId, "opening-session");
       const session = await client2.newSession(b.controller.signal, true, [descriptor]);
       b.sessionId = session.sessionId;
+      this.progress?.(b.activityId, "selecting-model");
       await client2.selectModel(session, o.model, b.controller.signal, o.reasoningEffort);
       client2.onUpdate = (event) => {
         if (event.sessionId !== b.sessionId || b.done) return;
         const u = event.update;
+        if (u.sessionUpdate === "agent_message_chunk" || u.sessionUpdate === "agent_thought_chunk") this.progress?.(b.activityId, "responding");
         this.observeCapacity?.(o.model, u);
         if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
           if (b.bridge.owns(u)) b.trustedAcpIds.add(u.toolCallId);
@@ -39711,6 +39719,7 @@ var ToolSessions = class {
       fresh = true;
     }
     const serverName = b?.bridge.serverName ?? (this.config.maxSessionsPerProcess > 1 ? `dsh-bridge-${randomUUID().replaceAll("-", "").slice(0, 12)}` : "dsh-bridge");
+    if (fresh) this.progress?.(o.purpose ? void 0 : o.sessionId, "preparing");
     let prompt = [];
     try {
       validateOptions(o, this.config);
@@ -39729,6 +39738,7 @@ var ToolSessions = class {
     try {
       if (fresh) {
         this.generations++;
+        this.progress?.(b.activityId, "waiting-model");
         this.deadline(b, this.config.timeoutMs, "ACP_TIMEOUT");
         void b.client.prompt(b.sessionId, prompt, b.controller.signal, 2147483647).then(
           (result) => {
@@ -39741,6 +39751,7 @@ var ToolSessions = class {
       } else {
         this.watch(b, o.signal);
         await this.resume(b, o);
+        this.progress?.(b.activityId, "waiting-model");
       }
       while (true) {
         while (w.queue.length) {
@@ -39780,8 +39791,10 @@ var ToolSessions = class {
         throw new LlmError7("Official ACP server ended without assistant text.", "EMPTY_RESPONSE");
       yield* w.mapper.end();
       completed = b.stop === "end_turn";
+      this.progress?.(b.activityId, completed ? "complete" : "cancelled");
       yield { type: "finish", reason: finishReason(b.stop) };
     } catch (error62) {
+      this.progress?.(b.activityId, o.signal?.aborted ? "cancelled" : "failed", classify(b.error ?? error62).code);
       throw o.signal?.aborted ? aborted2() : classify(b.error ?? error62);
     } finally {
       clearTimeout(w.batch);
@@ -39850,19 +39863,21 @@ var REASONING_META = {
 };
 var AntigravityAcpAdapter = class extends LlmAdapter {
   constructor(config2, runtime, warn = () => {
-  }, readImage) {
+  }, readImage, progress) {
     super();
     this.config = config2;
     this.runtime = runtime;
     this.warn = warn;
     this.readImage = readImage;
+    this.progress = progress;
     this.controlClient = new AcpClient(config2, runtime, warn);
-    this.tools = new ToolSessions(config2, runtime, warn, readImage, (model, update) => this.observeCapacity(model, update));
+    this.tools = new ToolSessions(config2, runtime, warn, readImage, (model, update) => this.observeCapacity(model, update), progress);
   }
   config;
   runtime;
   warn;
   readImage;
+  progress;
   controlClient;
   tools;
   tail = Promise.resolve();
@@ -39983,6 +39998,8 @@ var AntigravityAcpAdapter = class extends LlmAdapter {
       yield* this.tools.stream(options2);
       return;
     }
+    const activityId = options2.purpose ? void 0 : options2.sessionId;
+    this.progress?.(activityId, "preparing");
     const prompt = await buildAcpPrompt(options2, this.config, this.readImage);
     const release = await this.acquire(options2.signal);
     const borrowed = this.tools.borrowReadyClient();
@@ -40000,9 +40017,11 @@ var AntigravityAcpAdapter = class extends LlmAdapter {
           "Antigravity ACP is a text-only route: DSH tool schemas are omitted and tool execution is unavailable (toolPolicy: text-only)."
         );
       }
+      this.progress?.(activityId, "opening-session");
       const session = client2.takeUnusedSession() ?? await client2.newSession(options2.signal);
       sessionId = session.sessionId;
       this.catalog = modelCatalog(session);
+      this.progress?.(activityId, "selecting-model");
       await client2.selectModel(session, options2.model, options2.signal, options2.reasoningEffort);
       this.generations++;
       const nativeTools = () => {
@@ -40017,6 +40036,7 @@ var AntigravityAcpAdapter = class extends LlmAdapter {
       client2.onUpdate = (event) => {
         if (event.sessionId !== sessionId || done) return;
         this.observeCapacity(options2.model, event.update);
+        if (event.update.sessionUpdate === "agent_message_chunk" || event.update.sessionUpdate === "agent_thought_chunk") this.progress?.(activityId, "responding");
         if (event.update.sessionUpdate === "tool_call" || event.update.sessionUpdate === "tool_call_update") {
           nativeTools();
           return;
@@ -40026,6 +40046,7 @@ var AntigravityAcpAdapter = class extends LlmAdapter {
       };
       let stop = "";
       promptStarted = true;
+      this.progress?.(activityId, "waiting-model");
       const pending = client2.prompt(sessionId, prompt, options2.signal).then(
         (result) => {
           stop = result.stopReason;
@@ -40058,8 +40079,10 @@ var AntigravityAcpAdapter = class extends LlmAdapter {
         );
       yield* mapper.end();
       completed = stop === "end_turn";
+      this.progress?.(activityId, completed ? "complete" : "cancelled");
       yield { type: "finish", reason: finishReason(stop) };
     } catch (failure2) {
+      this.progress?.(activityId, options2.signal?.aborted ? "cancelled" : "failed", classify(failure2).code);
       throw options2.signal?.aborted ? aborted2() : classify(failure2);
     } finally {
       client2.onUpdate = void 0;
@@ -40141,11 +40164,50 @@ function resolveConfig(input2 = {}) {
   return config2;
 }
 
+// src/activity.ts
+import { Service } from "@deepseek-ai/cordis";
+var AgyActivity = class extends Service {
+  records = /* @__PURE__ */ new Map();
+  turns = /* @__PURE__ */ new Map();
+  constructor(ctx) {
+    super(ctx, "agyActivity");
+    ctx.effect(() => () => {
+      this.records.clear();
+      this.turns.clear();
+    });
+  }
+  startTurn(id, turn) {
+    if (!Number.isSafeInteger(turn) || turn < 0) return;
+    this.turns.delete(id);
+    this.turns.set(id, turn);
+    while (this.turns.size > 256) this.turns.delete(this.turns.keys().next().value);
+    this.records.delete(id);
+  }
+  progress = (id, stage, failureCode) => {
+    if (!id || id.length > 512) return;
+    const now = Date.now(), previous = this.records.get(id);
+    const startedAt = previous && (stage !== "preparing" || !["complete", "failed", "cancelled"].includes(previous.stage)) ? previous.startedAt : now;
+    this.records.delete(id);
+    this.records.set(id, { sessionId: id, turn: this.turns.get(id), stage, startedAt, updatedAt: now, ...failureCode && /^[A-Z_]{1,80}$/.test(failureCode) ? { failureCode } : {} });
+    while (this.records.size > 256) this.records.delete(this.records.keys().next().value);
+  };
+  get(id) {
+    const value = this.records.get(id);
+    if (!value || Date.now() - value.updatedAt > 36e5) return null;
+    return { ...value };
+  }
+};
+
 // src/index.ts
 var name = "llm-antigravity-acp";
 var inject = ["llm", "subprocess"];
 function apply(ctx, config2) {
   const resolved = resolveConfig(config2);
+  const activity = ctx.get("agyActivity") ?? new AgyActivity(ctx);
+  ctx.on("session/event", (session, event) => {
+    if (event.type === "turn/start") activity.startTurn(session.id, event.data.turn);
+    if (event.type === "turn/end" && activity.get(session.id)) activity.progress(session.id, event.data.reason.kind === "error" ? "failed" : ["aborted", "interrupted"].includes(event.data.reason.kind) ? "cancelled" : "complete", event.data.reason.kind === "error" ? event.data.reason.error.code : void 0);
+  });
   const attachments = ctx.get("attachments");
   const adapter = new AntigravityAcpAdapter(
     resolved,
@@ -40155,7 +40217,8 @@ function apply(ctx, config2) {
       width: image.attachment.width,
       height: image.attachment.height,
       maxBytes: image.attachment.bytes
-    }, signal) : void 0
+    }, signal) : void 0,
+    activity.progress
   );
   ctx.llm.registerAdapter([resolved.provider], adapter);
   ctx.effect(() => () => adapter.dispose());

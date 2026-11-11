@@ -37,7 +37,7 @@ export function classify(error: unknown): LlmError {
   }
   // Raw stderr, remote error messages, RPC data and causes can contain credentials.
   return new LlmError(
-    'Connection to the official ACP server ended. Retry to reconnect.',
+    'Agy 连接已中断，对话记录仍保留。可继续任务，或切换模型后继续；请先核对已有操作，不要盲目重复执行命令。',
     'ACP_DISCONNECTED',
   );
 }

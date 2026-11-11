@@ -16,6 +16,7 @@ import { modelCatalog, selectValues } from './models.js';
 import { buildAcpPrompt, type ImageReader } from './prompt.js';
 import type { Config } from './config.js';
 import { ToolSessions } from './mcp/sessions.js';
+import type { ProgressSink } from './activity.js';
 
 /**
  * DSH 0.2.1-rc.3 requires every model entry to declare reasoning metadata
@@ -54,10 +55,11 @@ export class AntigravityAcpAdapter extends LlmAdapter {
     private runtime: SubprocessRuntime,
     private warn: (message: string) => void = () => {},
     private readImage?: ImageReader,
+    private progress?: ProgressSink,
   ) {
     super();
     this.controlClient = new AcpClient(config, runtime, warn);
-    this.tools = new ToolSessions(config, runtime, warn, readImage, (model, update) => this.observeCapacity(model, update));
+    this.tools = new ToolSessions(config, runtime, warn, readImage, (model, update) => this.observeCapacity(model, update), progress);
   }
   private observeCapacity(model: string, update: import('@agentclientprotocol/sdk').SessionUpdate): void {
     if (update.sessionUpdate === 'usage_update' && Number.isSafeInteger(update.size) && update.size > 0)
@@ -179,6 +181,8 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       yield* this.tools.stream(options);
       return;
     }
+    const activityId = options.purpose ? undefined : options.sessionId;
+    this.progress?.(activityId, 'preparing');
     const prompt = await buildAcpPrompt(options, this.config, this.readImage);
     const release = await this.acquire(options.signal);
     const borrowed = this.tools.borrowReadyClient();
@@ -198,9 +202,11 @@ export class AntigravityAcpAdapter extends LlmAdapter {
           'Antigravity ACP is a text-only route: DSH tool schemas are omitted and tool execution is unavailable (toolPolicy: text-only).',
         );
       }
+      this.progress?.(activityId, 'opening-session');
       const session = client.takeUnusedSession() ?? (await client.newSession(options.signal));
       sessionId = session.sessionId;
       this.catalog = modelCatalog(session);
+      this.progress?.(activityId, 'selecting-model');
       await client.selectModel(session, options.model, options.signal, options.reasoningEffort);
       this.generations++;
       const nativeTools = () => {
@@ -215,6 +221,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       client.onUpdate = (event) => {
         if (event.sessionId !== sessionId || done) return;
         this.observeCapacity(options.model, event.update);
+        if (event.update.sessionUpdate === 'agent_message_chunk' || event.update.sessionUpdate === 'agent_thought_chunk') this.progress?.(activityId, 'responding');
         if (
           event.update.sessionUpdate === 'tool_call' ||
           event.update.sessionUpdate === 'tool_call_update'
@@ -227,6 +234,7 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       };
       let stop = '';
       promptStarted = true;
+      this.progress?.(activityId, 'waiting-model');
       const pending = client.prompt(sessionId, prompt, options.signal).then(
         (result) => {
           stop = result.stopReason;
@@ -260,8 +268,10 @@ export class AntigravityAcpAdapter extends LlmAdapter {
       yield* mapper.end();
       // ACP usage_update reports current context occupancy, not per-call token billing.
       completed = stop === 'end_turn';
+      this.progress?.(activityId, completed ? 'complete' : 'cancelled');
       yield { type: 'finish', reason: finishReason(stop) };
     } catch (failure) {
+      this.progress?.(activityId, options.signal?.aborted ? 'cancelled' : 'failed', classify(failure).code);
       throw options.signal?.aborted ? aborted() : classify(failure);
     } finally {
       client.onUpdate = undefined;
